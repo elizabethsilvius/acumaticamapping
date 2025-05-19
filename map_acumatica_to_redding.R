@@ -32,12 +32,24 @@ proximity_weights <- function(n, a) {
   dist <- abs(a - n)
   
   # Invert distances: smaller distance = higher weight
-  inv_dist <- 1 / (dist + 1e-6)  # Add small epsilon to avoid division by zero
+  inv_dist <- 1 / (dist + 1e-10)  # Add small epsilon to avoid division by zero
   
   # Normalize to sum to 1
   weights <- inv_dist / sum(inv_dist)
   
   return(weights)
+}
+filter_db <- function(db_group, match_df){
+  if (db_group == "LABOR") {
+    match_df <- match_df %>% filter(Labor_Cost > 0)
+  } else if (db_group == "MATERIAL") {
+    match_df <- match_df %>% filter(Material_Cost > 0)
+  } else if (db_group %in% c("COMMITMENT", "PROFESSIONAL")) {
+    match_df <- match_df %>% filter(Subcontractor_Cost > 0)
+  } else if (db_group == "EQUIPMENT") {
+    match_df <- match_df %>% filter(Equipment_Cost > 0)
+  }
+  return(match_df)
 }
 
 # Load data
@@ -76,7 +88,10 @@ redding <- merge(redding, progress, by.x = "Job_Item_ID", by.y = "Job_Item_No",
 
 # fill in perc installed NAs
 redding <- redding %>% 
-  mutate(perc_installed = replace_na(perc_installed, 1))
+  mutate(perc_installed = replace_na(perc_installed, 0))
+
+redding <- redding %>% 
+  filter(perc_installed > 0)
 
 # Normalize redding Cost_Code for matching
 redding <- redding %>%
@@ -102,15 +117,7 @@ for (i in 1:nrow(acumatica)) {
     # Filter Redding by SOV Category >= 15
     eligible <- redding %>% filter(SOV_Category_Number >= 15)
     # check debit group
-    if (debit_group == "LABOR") {
-      eligible <- eligible %>% filter(Labor_Cost > 0)
-    } else if (debit_group == "MATERIAL") {
-      eligible <- eligible %>% filter(Material_Cost > 0)
-    } else if (debit_group %in% c("COMMITMENT", "PROFESSIONAL")) {
-      eligible <- eligible %>% filter(Subcontractor_Cost > 0)
-    } else if (debit_group == "EQUIPMENT") {
-      eligible <- eligible %>% filter(Equipment_Cost > 0)
-    }
+    eligible <- filter_db(debit_group, eligible)
     
     # Weight based on date: earlier dates to lower SOV numbers
     elg_decile <- eligible$sov_decile
@@ -118,59 +125,57 @@ for (i in 1:nrow(acumatica)) {
     
     distribution <- amount * weights
     
+    if(amount - sum(distribution) > .1){
+      print(i)
+    }
+    
     result <- cbind(eligible %>% select(Job_Item_ID), 
-                      Amount_Allocated = distribution)
+                    Amount_Allocated = distribution)
   } else {
     # Match best Cost_Code
     matches <- redding %>%
       filter(str_sub(Cost_Code_Num, 1, 2) == str_sub(cc, 1, 2)) %>%
-      mutate(match_score = ifelse(str_sub(Cost_Code_Num, 3, 3) == str_sub(cc, 3, 3), 1, 0)) %>%
-      arrange(desc(match_score))
-    # if there is at least one cc that matches with 3 digits, filter to those ccs
-    if(sum(matches$match_score) > 0){
-      matches_scored <- matches %>%
-        filter(match_score == 1)
-    }
-    
-    # check the debit group
-    if (debit_group == "LABOR") {
-      matches_scored <- matches_scored %>% filter(Labor_Cost > 0)
-    } else if (debit_group == "MATERIAL") {
-      matches_scored <- matches_scored %>% filter(Material_Cost > 0)
-    } else if (debit_group %in% c("COMMITMENT", "PROFESSIONAL")) {
-      matches_scored <- matches_scored %>% filter(Subcontractor_Cost > 0)
-    } else if (debit_group == "EQUIPMENT") {
-      matches_scored <- matches_scored %>% filter(Equipment_Cost > 0)
-    }
-    
-    # if there is at least one matched group, use that group
-    if (nrow(matches_scored) > 0) {
-      matches <- matches_scored
-    } else{
-      # else, if there are not scored matches that match the group, check for
-      # unscored matches that match the debit group
-      if (debit_group == "LABOR") {
-        matches <- matches %>% filter(Labor_Cost > 0)
-      } else if (debit_group == "MATERIAL") {
-        matches <- matches %>% filter(Material_Cost > 0)
-      } else if (debit_group %in% c("COMMITMENT", "PROFESSIONAL")) {
-        matches <- matches %>% filter(Subcontractor_Cost > 0)
-      } else if (debit_group == "EQUIPMENT") {
-        matches <- matches %>% filter(Equipment_Cost > 0)
+      mutate(match_score_3 = ifelse(str_sub(Cost_Code_Num, 3, 3) == str_sub(cc, 3, 3), 1, 0),
+             match_score_4 = ifelse(str_sub(Cost_Code_Num, 4, 4) == str_sub(cc, 4, 4), 1, 0),
+             match_score_5 = ifelse(str_sub(Cost_Code_Num, 5, 5) == str_sub(cc, 5, 5), 1, 0),
+             match_score_6 = ifelse(str_sub(Cost_Code_Num, 6, 6) == str_sub(cc, 6, 6), 1, 0))
+    # filter matches to places where the debit group matches
+    matches <- filter_db(debit_group, matches)
+    if(nrow(matches) > 0){
+      # if there is at least one cc that matches with 6 digits, filter to those ccs
+      if(sum(matches$match_score_6) > 0){
+        matches <- matches %>%
+          filter(match_score_6 == 1)
+      }else{
+        # else, if there is at least one cc that matches 5 digits, filter to those ccs
+        if(sum(matches$match_score_5) > 0){
+          matches <- matches %>%
+            filter(match_score_5 == 1)
+        }else{
+          # else, if there is at least one cc that matches 4 digits, filter to those ccs
+          if(sum(matches$match_score_4) > 0){
+            matches <- matches %>%
+              filter(match_score_4 == 1)
+          }else{
+            # else, if there is at least one cc that matches 3 digits, filter to those ccs
+            if(sum(matches$match_score_3) > 0){
+              matches <- matches %>%
+                filter(match_score_3 == 1)
+            }
+          }
+        }
       }
-      # and add that cc to a list of unmatched
-      unmatched <- c(unmatched, cc)
-      
-    }
-    
-    if (nrow(matches) > 0) {
       total_cost <- rowSums(matches[, c("Labor_Cost", "Material_Cost", "Subcontractor_Cost", "Equipment_Cost")], na.rm = TRUE)
-      weights <- (total_cost *matches$perc_installed) / (sum(total_cost * matches$perc_installed))
+      weights <-  (total_cost *matches$perc_installed) / (sum(total_cost * matches$perc_installed))
       distribution <- amount * weights
+      if(amount - sum(distribution) > .1){
+        print(i)
+      }
       result <- cbind(matches %>% select(Job_Item_ID), 
                       Amount_Allocated = distribution)
-    } else {
-      result <- data.frame(Job_Item_ID = NA, Amount_Allocated = 0)
+      } else {
+        unmatched <- c(unmatched, cc)
+        result <- data.frame(Job_Item_ID = NA, Amount_Allocated = 0)
     }
   }
   
@@ -187,7 +192,7 @@ write_csv(final_result, "redding/allocated_results.csv")
 total_allocated <- final_result %>%
   group_by(Job_Item_ID) %>%
   summarise(Total_Amount_Allocated = sum(Amount_Allocated)) 
-    
+
 # Write to CSV
 write_csv(total_allocated, "redding/total_allocated results.csv")
 
