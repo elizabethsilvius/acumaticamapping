@@ -107,8 +107,18 @@ unmatched <- c()
 # Loop over each row in Acumatica
 for (i in 1:nrow(acumatica)) {
   row <- acumatica[i, ]
+  print(i)
   amount <- row$Amount
   cc <- row$Cost_Code_Num
+  if(cc == "000000"){
+    cc <- "010000"
+  }
+  if(cc == "221313"){
+    cc <- "321300"
+  }
+  if(cc == "033000"){
+    cc <- "321313"
+  }
   date <- row$Date
   debit_group <- row$`Debit Account Group`
   date_decile = row$date_decile
@@ -136,9 +146,9 @@ for (i in 1:nrow(acumatica)) {
     matches <- redding %>%
       filter(str_sub(Cost_Code_Num, 1, 2) == str_sub(cc, 1, 2)) %>%
       mutate(match_score_3 = ifelse(str_sub(Cost_Code_Num, 3, 3) == str_sub(cc, 3, 3), 1, 0),
-             match_score_4 = ifelse(str_sub(Cost_Code_Num, 4, 4) == str_sub(cc, 4, 4), 1, 0),
-             match_score_5 = ifelse(str_sub(Cost_Code_Num, 5, 5) == str_sub(cc, 5, 5), 1, 0),
-             match_score_6 = ifelse(str_sub(Cost_Code_Num, 6, 6) == str_sub(cc, 6, 6), 1, 0))
+            match_score_4 = ifelse(str_sub(Cost_Code_Num, 4, 4) == str_sub(cc, 4, 4), 1, 0),
+            match_score_5 = ifelse(str_sub(Cost_Code_Num, 5, 5) == str_sub(cc, 5, 5), 1, 0),
+            match_score_6 = ifelse(str_sub(Cost_Code_Num, 6, 6) == str_sub(cc, 6, 6), 1, 0))
     # filter matches to places where the debit group matches
     matches <- filter_db(debit_group, matches)
     if(nrow(matches) > 0){
@@ -165,6 +175,8 @@ for (i in 1:nrow(acumatica)) {
           }
         }
       }
+    }
+    if(nrow(matches) > 0){
       total_cost <- rowSums(matches[, c("Labor_Cost", "Material_Cost", "Subcontractor_Cost", "Equipment_Cost")], na.rm = TRUE)
       weights <-  (total_cost *matches$perc_installed) / (sum(total_cost * matches$perc_installed))
       distribution <- amount * weights
@@ -174,9 +186,9 @@ for (i in 1:nrow(acumatica)) {
       result <- cbind(matches %>% select(Job_Item_ID), 
                       Amount_Allocated = distribution)
       } else {
-        unmatched <- c(unmatched, cc)
-        result <- data.frame(Job_Item_ID = NA, Amount_Allocated = 0)
-    }
+      unmatched <- c(unmatched, cc)
+      result <- data.frame(Job_Item_ID = NA, Amount_Allocated = 0)
+      }
   }
   
   # Append job allocations
@@ -187,14 +199,14 @@ for (i in 1:nrow(acumatica)) {
 final_result <- bind_rows(output_rows)
 
 # Write to CSV
-write_csv(final_result, "redding/allocated_results.csv")
+write_csv(final_result, "redding/acumatica_allocated_results.csv")
 
 total_allocated <- final_result %>%
   group_by(Job_Item_ID) %>%
   summarise(Total_Amount_Allocated = sum(Amount_Allocated)) 
 
 # Write to CSV
-write_csv(total_allocated, "redding/total_allocated results.csv")
+write_csv(total_allocated, "redding/acumatica_to_redding_totals_allocated.csv")
 
 unmatched <- unique(unmatched)
 unmatched
